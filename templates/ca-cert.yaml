@@ -1,0 +1,10 @@
+{{- $_ := include "etcd-cluster.ca.setup" . -}}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .commonCASecretName }}
+  namespace: {{ .Release.Namespace }}
+data:
+  ca.crt: {{ .commonCA.Cert | b64enc }}
+  ca.key: {{ .commonCA.Key  | b64enc }}

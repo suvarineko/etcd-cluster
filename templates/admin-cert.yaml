@@ -1,0 +1,16 @@
+{{- $_ := include "etcd-cluster.ca.setup" . -}}
+{{- $cn := include "etcd-cluster-certs.admin-common-name" . -}}
+{{- $dns := concat (list "localhost") .Values.tls.server.extraDnsNames }}
+{{- $ip := concat (list "127.0.0.1" "::1") .Values.tls.server.extraIpAddresses }}
+{{- $cert := genSignedCert $cn $ip $dns (.Values.tls.certValidityDuration | int) .commonCA -}}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ include "etcd-cluster.fullname" . }}-admin-cert
+  namespace: {{ .Release.Namespace }}
+type: kubernetes.io/tls
+data:
+  ca.crt:  {{ .commonCA.Cert | b64enc }}
+  tls.crt: {{ $cert.Cert | b64enc }}
+  tls.key: {{ $cert.Key  | b64enc }}

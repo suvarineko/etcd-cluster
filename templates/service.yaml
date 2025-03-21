@@ -1,0 +1,27 @@
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    {{- include "etcd-cluster.labels" . | nindent 4 }}
+  name: {{ include "etcd-cluster.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  internalTrafficPolicy: Cluster
+  ipFamilies:
+  - IPv4
+  ipFamilyPolicy: SingleStack
+  ports:
+  - name: etcd-client
+    port: {{ .Values.service.clientPort }} #32379
+    protocol: TCP
+    targetPort: 32379
+  - name: etcd-server
+    port: {{ .Values.service.serverPort }} #32380
+    protocol: TCP
+    targetPort: 32380
+  selector:
+    {{- include "etcd-cluster.selectorLabels" . | nindent 4 }}
+  sessionAffinity: None
+  type: {{ .Values.service.type }}

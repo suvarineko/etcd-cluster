@@ -1,0 +1,35 @@
+replicaCount: 3
+
+clusterDomain: ""
+baseDomain: "*.io"
+
+tls:
+  ca:
+    cert: ""
+    key: ""
+  server:
+    extraIpAddresses: []
+    extraDnsNames: []
+  client:
+    extraIpAddresses: []
+    extraDnsNames: []
+  certValidityDuration: 3650
+image:
+  registry:
+  repo:
+  image: etcd
+  tag:
+  imagePullPolicy: IfNotPresent
+
+nameOverride: ""
+fullnameOverride: ""
+
+service:
+  name: etcd-cluster
+  type: ClusterIP
+  clientPort: 32379
+  serverPort: 32380
+
+nodeSelector: {}
+
+tolerations: []

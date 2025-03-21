@@ -1,0 +1,180 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: etcd-scripts
+  namespace: {{ .Release.Namespace }}
+data:
+  etcd-prestart.sh: |-
+    #!/bin/bash
+    set -e
+
+    # Get the current container's hostname
+    HOSTNAME=$(hostname)
+
+    # Define etcd endpoints for the cluster (using other members to avoid using self)
+    ENDPOINTS=""
+    for i in {0..2}; do
+    MEMBER_NAME="{{ include "etcd-cluster.fullname" . }}-$i.$SERVICE_NAME.$K8S_NAMESPACE.svc"
+    if [ "$MEMBER_NAME" != "$HOSTNAME" ]; then
+        if [ -z "$ENDPOINTS" ]; then
+        ENDPOINTS="https://$MEMBER_NAME:2379"
+        else
+        ENDPOINTS="$ENDPOINTS,https://$MEMBER_NAME:2379"
+        fi
+    fi
+    done
+
+    # Configuration for etcdctl
+    export ETCDCTL_API=3
+    #CACERT="/var/run/etcd-certs/ca.crt"
+    #CERT="/var/run/etcd-certs/server.crt"
+    #KEY="/var/run/etcd-certs/server.key"
+    ETCDCTL_CMD="etcdctl --endpoints=$ENDPOINTS --cacert=$ETCDCTL_CACERT --cert=$ETCDCTL_CERT --key=$ETCDCTL_KEY"
+
+    echo "Starting etcd member management for $HOSTNAME"
+
+    # Function to wait for the etcd cluster to be available
+    wait_for_etcd() {
+    echo "Waiting for etcd cluster to be available..."
+    
+    for i in {1..30}; do
+        if $ETCDCTL_CMD endpoint health &>/dev/null; then
+        echo "Etcd cluster is available"
+        return 0
+        fi
+        echo "Waiting for etcd cluster ($i/30)..."
+        sleep 5
+    done
+    
+    echo "Error: Timed out waiting for etcd cluster"
+    exit 1
+    }
+
+    # Wait for the etcd cluster to be available
+    wait_for_etcd
+
+    # Check if the current hostname is already a member of the cluster
+    echo "Checking if $HOSTNAME is already a member of the cluster..."
+    MEMBER_LIST=$($ETCDCTL_CMD member list -w json)
+    MEMBER_ID=$(echo $MEMBER_LIST | jq -r --arg name "$HOSTNAME" '.members[] | select(.name == $name) | .ID')
+
+    if [ -n "$MEMBER_ID" ]; then
+    echo "Found existing member with ID $MEMBER_ID for $HOSTNAME"
+    
+    # Remove the existing member
+    echo "Removing member $HOSTNAME (ID: $MEMBER_ID) from the cluster..."
+    $ETCDCTL_CMD member remove $MEMBER_ID
+    echo "Member removed successfully"
+    
+    # Wait a moment for the removal to complete
+    sleep 5
+    fi
+
+    # Add the member back with new ID
+    echo "Adding $HOSTNAME as a new member to the cluster..."
+    PEER_URL="https://$HOSTNAME:2380"
+    $ETCDCTL_CMD member add $HOSTNAME --peer-urls=$PEER_URL
+    echo "$HOSTNAME added successfully to the cluster with new ID"
+
+    echo "Etcd member management completed successfully"
+    exit 0
+  etcd-prestop.sh: |-
+    #!/bin/bash
+    set -e
+
+    # Get the current container's hostname
+    HOSTNAME=$(hostname)
+    echo "Starting etcd member removal process for $HOSTNAME"
+
+    # Define etcd endpoints for the cluster (using other members to avoid using self)
+    ENDPOINTS=""
+    for i in {0..2}; do
+    MEMBER_NAME="{{ include "etcd-cluster.fullname" . }}-$i.$SERVICE_NAME.$K8S_NAMESPACE.svc"
+    if [ "$MEMBER_NAME" != "$HOSTNAME" ]; then
+        if [ -z "$ENDPOINTS" ]; then
+        ENDPOINTS="https://$MEMBER_NAME:2379"
+        else
+        ENDPOINTS="$ENDPOINTS,https://$MEMBER_NAME:2379"
+        fi
+    fi
+    done
+
+    # Configuration for etcdctl
+    export ETCDCTL_API=3
+    #CACERT="/var/run/etcd-certs/ca.crt"
+    #CERT="/var/run/etcd-certs/server.crt"
+    #KEY="/var/run/etcd-certs/server.key"
+    ETCDCTL_CMD="etcdctl --endpoints=$ENDPOINTS --cacert=$ETCDCTL_CACERT --cert=$ETCDCTL_CERT --key=$ETCDCTL_KEY"
+
+    # Function to check if the etcd cluster is available
+    check_etcd_available() {
+    if ! $ETCDCTL_CMD endpoint health &>/dev/null; then
+        echo "Warning: Cannot connect to etcd cluster. Member removal may not be possible."
+        return 1
+    fi
+    return 0
+    }
+
+    # Function to remove the current member from the cluster
+    remove_member() {
+    echo "Looking for member $HOSTNAME in the cluster..."
+    MEMBER_LIST=$($ETCDCTL_CMD member list -w json)
+    MEMBER_ID=$(echo $MEMBER_LIST | jq -r --arg name "$HOSTNAME" '.members[] | select(.name == $name) | .ID')
+    
+    if [ -n "$MEMBER_ID" ]; then
+        echo "Found member $HOSTNAME with ID $MEMBER_ID"
+        echo "Removing member $HOSTNAME (ID: $MEMBER_ID) from the cluster..."
+        $ETCDCTL_CMD member remove $MEMBER_ID
+        echo "Member removed successfully"
+        return 0
+    else
+        echo "Member $HOSTNAME not found in the cluster. Nothing to remove."
+        return 0
+    fi
+    }
+
+    # Main execution logic with timeout
+    (
+    # Set a timeout for the entire operation
+    TIMEOUT=30
+    
+    # Try to connect to the etcd cluster
+    if check_etcd_available; then
+        # Try to remove the member
+        if remove_member; then
+        echo "Member removal completed successfully"
+        exit 0
+        else
+        echo "Error: Failed to remove member"
+        exit 1
+        fi
+    else
+        echo "Warning: Skipping member removal as etcd cluster is not accessible"
+        exit 0
+    fi
+    ) & 
+
+    PID=$!
+
+    # Wait for the process to complete with timeout
+    TIMEOUT=30
+    for i in $(seq 1 $TIMEOUT); do
+    if ! kill -0 $PID 2>/dev/null; then
+        # Process has completed
+        wait $PID
+        EXIT_CODE=$?
+        if [ $EXIT_CODE -eq 0 ]; then
+        echo "Graceful member removal process completed within timeout"
+        else
+        echo "Graceful member removal process failed with exit code $EXIT_CODE"
+        fi
+        exit $EXIT_CODE
+    fi
+    sleep 1
+    done
+
+    # If we're here, the process is still running after timeout
+    echo "Timeout reached. Forcing termination of member removal process."
+    kill -9 $PID 2>/dev/null || true
+    echo "Container shutdown will proceed regardless of member removal status"
+    exit 0

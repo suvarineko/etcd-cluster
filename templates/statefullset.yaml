@@ -1,0 +1,184 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  labels:
+    {{- include "etcd-cluster.labels" . | nindent 4 }}
+  name: {{ include "etcd-cluster.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+spec:
+  persistentVolumeClaimRetentionPolicy:
+    whenDeleted: Delete
+    whenScaled: Delete
+  podManagementPolicy: OrderedReady
+  replicas: {{ .Values.replicaCount }}}}
+  revisionHistoryLimit: 10
+  serviceName: {{ include "etcd-cluster.fullname" . }}
+  selector:
+    matchLabels:
+      {{- include "etcd-cluster.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      creationTimestamp: null
+      labels:
+        {{- include "etcd-cluster.labels" . | nindent 8 }}
+    spec:
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchLabels:
+                {{- include "etcd-cluster.selectorLabels" . | nindent 16 }}
+            topologyKey: kubernetes.io/hostname
+      automountServiceAccountToken: true
+      # initContainers:
+      #   - name: ectd-clusterprecheck
+      #     image: '{{ .Values.image.registry }}/{{ .Values.image.repo }}/{{ .Values.image.image }}:{{ default .Chart.AppVersion .Values.image.tag }}'
+      #     imagePullPolicy: {{ .Values.image.imagePullPolicy }}
+      #     command:
+      #       - /etc/etcd-scripts/etcd-prestop.sh
+      #     env:
+      #       - name: ETCDCTL_API
+      #         value: "3"
+      #       - name: ETCDCTL_CACERT
+      #         value: "/var/lib/cilium/etcd-secrets/ca.crt"
+      #       - name: ETCDCTL_CERT
+      #         value: "/var/lib/cilium/etcd-secrets/tls.crt"
+      #       - name: ETCDCTL_KEY
+      #         value: "/var/lib/cilium/etcd-secrets/tls.key"
+      #       - name: K8S_NAMESPACE
+      #         valueFrom:
+      #           fieldRef:
+      #           fieldPath: metadata.namespace
+      #       - name: HOSTNAME
+      #         valueFrom:
+      #           fieldRef:
+      #           fieldPath: metadata.name
+      #       - name: SERVICE_NAME
+      #         value: {{ include "etcd-cluster.fullname" . }}
+      #     volumeMounts:
+      #       - mountPath: /etc/etcd-scripts
+      #         name: etcd-scripts
+      #       - mountPath: /var/lib/cilium/etcd-secrets
+      #         name: etcd-admin-client
+      #         readOnly: true
+      containers:
+      - args:
+        - --data-dir=/var/run/etcd
+        - --name=$(HOSTNAME)
+        - --wal-dir=/var/run/etcd/wal
+        - --listen-peer-urls=https://0.0.0.0:32380
+        - --advertise-client-urls=https://$(HOSTNAME).$(SERVICE_NAME).$(K8S_NAMESPACE).svc:32379
+        - --initial-cluster-state=new
+        - --client-cert-auth
+        - --trusted-ca-file=/var/lib/etcd-secrets/ca.crt
+        - --cert-file=/var/lib/etcd-secrets/tls.crt
+        - --key-file=/var/lib/etcd-secrets/tls.key
+        - --peer-client-cert-auth
+        - --peer-trusted-ca-file=/var/lib/cilium/etcd-secrets/ca.crt
+        - --peer-cert-file=/var/lib/cilium/etcd-secrets/tls.crt
+        - --peer-key-file=/var/lib/cilium/etcd-secrets/tls.key
+        - --listen-client-urls=https://127.0.0.1:32379,https://[$(HOSTNAME_IP)]:32379
+        - --initial-cluster-token=etcd-$(K8S_NAMESPACE)
+        - --initial-cluster={{ .Values.service.name }}-0=https://{{ .Values.service.name }}-0.$(SERVICE_NAME).$(K8S_NAMESPACE).svc:32380,{{ .Values.service.name }}-1=https://{{ .Values.service.name }}-1.$(SERVICE_NAME).$(K8S_NAMESPACE).svc:32380,{{ .Values.service.name }}-2=https://{{ .Values.service.name }}-2.$(SERVICE_NAME).$(K8S_NAMESPACE).svc:32380
+        - --initial-advertise-peer-urls=https://$(HOSTNAME).$(SERVICE_NAME).$(K8S_NAMESPACE).svc:32380
+        - --auto-compaction-mode=periodic
+        - --auto-compaction-retention=1h
+        - --listen-metrics-urls=http://[$(HOSTNAME_IP)]:9963
+        - --metrics=basic
+        command:
+        - /usr/bin/etcd
+        env:
+        - name: ETCDCTL_API
+          value: "3"
+        - name: HOSTNAME_IP
+          valueFrom:
+            fieldRef:
+              apiVersion: v1
+              fieldPath: status.podIP
+        - name: K8S_NAMESPACE
+          valueFrom:
+            fieldRef:
+             fieldPath: metadata.namespace
+        - name: HOSTNAME
+          valueFrom:
+            fieldRef:
+             fieldPath: metadata.name
+        - name: SERVICE_NAME
+          value: {{ include "etcd-cluster.fullname" . }}
+        image: '{{ .Values.image.registry }}/{{ .Values.image.repo }}/{{ .Values.image.image }}:{{ default .Chart.AppVersion .Values.image.tag }}'
+        imagePullPolicy: {{ .Values.image.imagePullPolicy }}
+        name: etcd
+        lifecycle:
+          preStop:
+            exec:
+              command: ["/bin/sh", "-c", "/etc/etcd-scripts/etcd-prestop.sh"]
+        ports:
+        - containerPort: 32379
+          name: etcd
+          protocol: TCP
+        - containerPort: 32380
+          name: etcd-server
+          protocol: TCP
+        - containerPort: 9963
+          name: etcd-metrics
+          protocol: TCP
+        resources: {}
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: FallbackToLogsOnError
+        volumeMounts:
+        - mountPath: /etc/etcd-scripts
+          name: etcd-scripts
+        - mountPath: /var/lib/etcd-secrets
+          name: etcd-server-secrets
+          readOnly: true
+        - mountPath: /var/run/etcd
+          name: etcd-data-dir
+        - mountPath: /var/lib/cilium/etcd-secrets
+          name: etcd-admin-client
+          readOnly: true
+      dnsPolicy: ClusterFirstWithHostNet
+      nodeSelector: {{- toYaml .Values.nodeSelector | nindent 8 }}
+      priorityClassName: system-cluster-critical
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext: {}
+      # hostNetwork: true
+      terminationGracePeriodSeconds: 30
+      tolerations: {{- toYaml .Values.tolerations | nindent 8 }}
+      volumes:
+        - name: etcd-scripts
+          configMap:
+            name: cilium-clustermesh-etcd-scripts
+            defaultMode: 0555
+        - name: etcd-server-secrets
+          projected:
+            defaultMode: 256
+            sources:
+            - secret:
+                items:
+                - key: tls.crt
+                  path: tls.crt
+                - key: tls.key
+                  path: tls.key
+                - key: ca.crt
+                  path: ca.crt
+                name: clustermesh-apiserver-server-cert
+        - name: etcd-admin-client
+          projected:
+            defaultMode: 256
+            sources:
+            - secret:
+                items:
+                - key: tls.crt
+                  path: tls.crt
+                - key: tls.key
+                  path: tls.key
+                - key: ca.crt
+                  path: ca.crt
+                name: clustermesh-apiserver-admin-cert
+        - name: etcd-data-dir
+          emptyDir: {}
+  updateStrategy:
+    rollingUpdate:
+      partition: 0
+    type: RollingUpdate
